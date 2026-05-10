@@ -286,7 +286,8 @@ class Crawler:
     def _fetch(self, url: str, is_blob: bool = False, referer: str = None):
         """
         Fetch with adaptive retries. Handles 403, 429, transient errors with
-        exponential back-off, header rotation, and a fresh session as last resort.
+        exponential back-off, header rotation, session persistence, and multiple
+        strategies to bypass Cloudflare/KiwiFlare protection.
         Returns (response, error_message_or_None).
         """
         timeout = CFG.get("request_timeout", 30)
@@ -295,20 +296,50 @@ class Crawler:
         ref = referer or self._referer
         last_err = None
 
+        # Initial warm-up delay before first request to this URL
+        if not hasattr(self, '_first_request_done'):
+            self._first_request_done = True
+            time.sleep(random.uniform(2.0, 4.0))
+
         for attempt in range(1, max_retries + 1):
             if self.stop_flag.is_set():
                 return None, "stopped"
             try:
                 accept = None if not is_blob else "*/*"
                 headers = self._build_headers(referer=ref, accept=accept)
-                # rotate session every few attempts
-                sess = self.session if attempt < 3 else requests.Session()
+                
+                # Strategy 1: Use persistent session for first few attempts (cookie accumulation)
+                # Strategy 2: Fresh session after that (clean slate)
+                sess = self.session if attempt <= 2 else requests.Session()
+                
+                # Add extra headers that real browsers send
+                headers["Sec-Ch-Ua"] = '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"'
+                headers["Sec-Ch-Ua-Mobile"] = "?0"
+                headers["Sec-Ch-Ua-Platform"] = '"Windows"'
+                headers["Priority"] = "u=0, i"
+                
                 resp = sess.get(url, headers=headers, timeout=timeout,
                                 allow_redirects=True, stream=is_blob)
                 self.state["last_status"] = resp.status_code
 
                 if resp.status_code == 200:
-                    return resp, None
+                    # Verify response is not a challenge page masquerading as 200
+                    sniff = resp.text[:5000].lower() if hasattr(resp, 'text') else ""
+                    challenge_indicators = (
+                        "cloudflare", "kiwiflare", "just a moment",
+                        "checking your browser", "ddos protection",
+                        "attention required", "captcha", "challenge",
+                        "browser verification", "ray id", "cf-spinner"
+                    )
+                    if any(w in sniff for w in challenge_indicators):
+                        self.log.info("Challenge content detected in 200 response, treating as blocked")
+                        resp.status_code = 403  # Treat as blocked for retry logic
+                    
+                    if resp.status_code == 200:
+                        # Update session cookies for future requests
+                        if attempt <= 2:
+                            self.session.cookies.update(sess.cookies)
+                        return resp, None
 
                 if resp.status_code in (403, 401, 429, 503):
                     # 403/blocking: longer backoff, reset session, rotate UA
@@ -325,8 +356,26 @@ class Crawler:
                                     ("cloudflare", "kiwiflare", "just a moment",
                                      "checking your browser", "ddos protection",
                                      "attention required", "captcha"))
-                    extra = 5.0 if challenge else 0.0
-                    wait = (backoff ** attempt) + random.uniform(0.5, 2.0) + extra
+                    
+                    # Strategy: Progressive delays with challenge detection
+                    base_wait = backoff ** min(attempt, 3)
+                    random_factor = random.uniform(1.0, 3.0)
+                    challenge_penalty = 8.0 if challenge else 0.0
+                    
+                    # For first 403, try a different approach - visit homepage first
+                    if attempt == 1 and challenge:
+                        self.log.info("First 403 with challenge - attempting homepage warmup")
+                        try:
+                            home = f"{urlparse(url).scheme}://{self.root_netloc}/"
+                            home_headers = self._build_headers(referer=None)
+                            home_resp = sess.get(home, headers=home_headers, timeout=timeout)
+                            time.sleep(random.uniform(3.0, 6.0))
+                            # Try again with updated cookies
+                            self.session.cookies.update(sess.cookies)
+                        except Exception as e:
+                            self.log.warning("Homepage warmup failed: %s", e)
+                    
+                    wait = base_wait + random_factor + challenge_penalty
                     self.session = requests.Session()  # fresh cookies
                     time.sleep(wait)
                     continue
@@ -363,12 +412,22 @@ class Crawler:
 
     # --- warm up: hit homepage to get cookies before the wiki ---
     def warm_up(self):
+        """Warm up session by visiting homepage and key entry points."""
         try:
             home = f"{urlparse(self.start_url).scheme}://{self.root_netloc}/"
             self.log.info("Warming up session: %s", home)
             headers = self._build_headers(referer=None)
-            self.session.get(home, headers=headers, timeout=CFG["request_timeout"])
-            time.sleep(random.uniform(1.0, 2.5))
+            
+            # Visit homepage first to establish cookies
+            resp = self.session.get(home, headers=headers, timeout=CFG["request_timeout"])
+            time.sleep(random.uniform(2.0, 4.0))
+            
+            # If start_url is different from home, visit it too
+            if self.start_url != home:
+                self.log.info("Warming up start URL: %s", self.start_url)
+                self.session.get(self.start_url, headers=headers, timeout=CFG["request_timeout"])
+                time.sleep(random.uniform(1.5, 3.0))
+                
         except Exception as e:
             self.log.warning("Warm-up failed (non-fatal): %s", e)
 
@@ -473,6 +532,14 @@ class Crawler:
                   attempts=pages.attempts+1
             """, (h, url, title, saved_path, status, http_status, depth, error, now))
             con.commit()
+
+    def _get_attempts(self, url: str) -> int:
+        """Get the number of attempts for a URL."""
+        h = url_hash(url)
+        with self.project.conn() as con:
+            cur = con.cursor()
+            row = cur.execute("SELECT attempts FROM pages WHERE url_hash=?", (h,)).fetchone()
+            return row["attempts"] if row else 0
 
     # --- blob handling ---
     def _save_blob(self, url: str, referer: str = None) -> str:
@@ -739,17 +806,27 @@ class Crawler:
                 except Exception:
                     text = resp.content.decode("utf-8", errors="ignore")
 
-                # KiwiFlare / Cloudflare detection
+                # KiwiFlare / Cloudflare detection - expanded indicators
                 low = text[:5000].lower()
-                if any(w in low for w in ("kiwiflare", "just a moment",
-                                          "checking your browser",
-                                          "attention required")):
-                    self.log.warning("Challenge page detected on %s; backing off", url)
+                challenge_indicators = (
+                    "kiwiflare", "just a moment", "checking your browser",
+                    "attention required", "cloudflare", "ddos protection",
+                    "captcha", "challenge", "browser verification", "ray id",
+                    "cf-spinner", "please wait", "verifying you are human"
+                )
+                if any(w in low for w in challenge_indicators):
+                    self.log.warning("Challenge page detected on %s; backing off and re-queuing", url)
+                    # Mark as failed but re-enqueue for retry later with fresh session
                     self._mark_page(url, "failed",
-                                    error="challenge-page",
+                                    error="challenge-page-retry",
                                     http_status=resp.status_code, depth=depth)
-                    time.sleep(random.uniform(8, 15))
+                    time.sleep(random.uniform(10, 20))
                     self.session = requests.Session()
+                    # Re-enqueue at same depth for retry if we haven't tried too many times
+                    attempts = self._get_attempts(url)
+                    if attempts < 3:
+                        self.log.info("Re-queuing %s for retry (attempt %d)", url, attempts + 1)
+                        self._enqueue(url, depth)
                     self._polite_sleep()
                     continue
 

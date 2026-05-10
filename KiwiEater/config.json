@@ -1,0 +1,32 @@
+{
+  "branding": {
+    "heading": "KIWIFARMS ARCHIVE",
+    "subheading": "TACHIKOMA MEMORY DUMP SYSTEM",
+    "footer": "Section 9 - Public Information Division"
+  },
+  "network": {
+    "enable_local_network": true,
+    "host": "0.0.0.0",
+    "port": 8080
+  },
+  "crawl_settings": {
+    "max_depth": 3,
+    "request_delay_min": 2.0,
+    "request_delay_max": 5.0,
+    "timeout_seconds": 30,
+    "max_retries": 5,
+    "user_agent_rotation": true,
+    "respect_robots_txt": false
+  },
+  "anti_detection": {
+    "solve_challenges": true,
+    "browser_emulation": true,
+    "randomize_headers": true,
+    "cookie_persistence": true
+  },
+  "storage": {
+    "compress_images": true,
+    "convert_to_blob": true,
+    "save_videos": true
+  }
+}
