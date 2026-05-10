@@ -1,0 +1,25 @@
+{
+  "branding": "KiwiEater Archive System",
+  "archive_heading": "OFFLINE ARCHIVE",
+  "host": "127.0.0.1",
+  "port": 7743,
+  "network_access": false,
+  "network_host": "0.0.0.0",
+  "default_delay_min": 2.0,
+  "default_delay_max": 5.0,
+  "max_retries": 5,
+  "retry_backoff_base": 3.0,
+  "request_timeout": 30,
+  "max_concurrent": 2,
+  "user_agents": [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+  ],
+  "blob_extensions": [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".mp4", ".webm", ".ico", ".bmp"],
+  "skip_external_domains": true,
+  "projects_dir": "projects",
+  "logs_dir": "logs"
+}
